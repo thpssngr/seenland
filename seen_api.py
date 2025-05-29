@@ -1,0 +1,74 @@
+# datei: seen_api.py
+
+from flask import Flask, jsonify
+import requests
+from bs4 import BeautifulSoup
+
+app = Flask(__name__)
+
+SEEN = {
+    "pilsensee": "pilsensee-16628055",
+    "woerthsee": "woerthsee-16651003",
+    "ammersee": "stegen-16602008",
+    "starnbergersee": "starnberg-16663002"
+}
+
+
+BASE_URL = "https://www.gkd.bayern.de/de/seen/wassertemperatur/isar/{slug}/messwerte"
+
+def scrape_temperature(slug):
+    url = BASE_URL.format(slug=slug)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X)"
+    }
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        return None
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    table = soup.find("table", class_="tblsort")
+    if not table:
+        return None
+
+    rows = table.find_all("tr")
+    if len(rows) < 2:
+        return None
+
+    first_row = rows[1].find_all("td")
+    if len(first_row) < 2:
+        return None
+
+    timestamp = first_row[0].get_text(strip=True)
+    temperature = first_row[1].get_text(strip=True)
+
+    return {"zeit": timestamp, "temperatur": temperature}
+
+@app.route("/temperatur/<see_name>")
+def get_temperatur(see_name):
+    slug = SEEN.get(see_name.lower())
+    if not slug:
+        return jsonify({"fehler": "See nicht gefunden"}), 404
+
+    data = scrape_temperature(slug)
+    if data is None:
+        return jsonify({"fehler": "Daten konnten nicht geladen werden"}), 500
+
+    return jsonify({"see": see_name, **data})
+
+@app.route("/alle")
+def get_alle_temperaturen():
+    ergebnisse = {}
+    for name, slug in SEEN.items():
+        data = scrape_temperature(slug)
+        ergebnisse[name] = data if data else {"fehler": "keine Daten"}
+    return jsonify(ergebnisse)
+
+@app.route("/")
+def index():
+    return "<h1>🚤 Seen-Temperatur API</h1><ul>" + \
+           "".join(f"<li><a href='/temperatur/{see}'>{see}</a></li>" for see in SEEN) + \
+           "<li><a href='/alle'>Alle Seen</a></li></ul>"
+
+if __name__ == "__main__":
+    app.run(debug=True, host="127.0.0.1", port=5000)
+
