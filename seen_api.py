@@ -4,6 +4,15 @@ from flask import Flask, jsonify
 import requests
 from bs4 import BeautifulSoup
 
+from flask_caching import Cache
+
+app = Flask(__name__)
+CORS(app)
+
+# Cache-Konfiguration (einfacher In-Memory-Cache)
+cache = Cache(app, config={"CACHE_TYPE": "SimpleCache"})
+
+
 app = Flask(__name__)
 
 SEEN = {
@@ -55,6 +64,8 @@ def get_temperatur(see_name):
 
     return jsonify({"see": see_name, **data})
 
+
+@cache.cached(timeout=3600)  # 1 Stunde Cache
 @app.route("/alle")
 def get_alle_temperaturen():
     ergebnisse = {}
