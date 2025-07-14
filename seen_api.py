@@ -3,17 +3,14 @@
 from flask import Flask, jsonify
 import requests
 from bs4 import BeautifulSoup
-
 from flask_caching import Cache
+from flask_cors import CORS  # Import CORS
 
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # Enable CORS for all routes
 
-# Cache-Konfiguration (einfacher In-Memory-Cache)
+# Cache configuration (simple in-memory cache)
 cache = Cache(app, config={"CACHE_TYPE": "SimpleCache"})
-
-
-app = Flask(__name__)
 
 SEEN = {
     "pilsensee": "pilsensee-16628055",
@@ -22,16 +19,19 @@ SEEN = {
     "starnbergersee": "starnberg-16663002"
 }
 
-
 BASE_URL = "https://www.gkd.bayern.de/de/seen/wassertemperatur/isar/{slug}/messwerte"
 
 def scrape_temperature(slug):
+    """Scrapes the water temperature for a given lake slug."""
     url = BASE_URL.format(slug=slug)
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X)"
     }
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()  # Raise an exception for bad status codes
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching {url}: {e}")
         return None
 
     soup = BeautifulSoup(response.text, "html.parser")
@@ -53,21 +53,25 @@ def scrape_temperature(slug):
     return {"zeit": timestamp, "temperatur": temperature}
 
 @app.route("/temperatur/<see_name>")
+@cache.cached(timeout=3600)  # Cache for 1 hour
 def get_temperatur(see_name):
-    slug = SEEN.get(see_name.lower())
-    if not slug:
+    """Returns the water temperature for a specific lake."""
+    see_name = see_name.lower()
+    if see_name not in SEEN:
         return jsonify({"fehler": "See nicht gefunden"}), 404
 
+    slug = SEEN[see_name]
     data = scrape_temperature(slug)
+
     if data is None:
         return jsonify({"fehler": "Daten konnten nicht geladen werden"}), 500
 
     return jsonify({"see": see_name, **data})
 
-
-@cache.cached(timeout=3600)  # 1 Stunde Cache
 @app.route("/alle")
+@cache.cached(timeout=3600)  # Cache for 1 hour
 def get_alle_temperaturen():
+    """Returns the water temperature for all lakes."""
     ergebnisse = {}
     for name, slug in SEEN.items():
         data = scrape_temperature(slug)
@@ -76,6 +80,7 @@ def get_alle_temperaturen():
 
 @app.route("/")
 def index():
+    """Serves the index page with links to the API endpoints."""
     return "<h1>🚤 Seen-Temperatur API</h1><ul>" + \
            "".join(f"<li><a href='/temperatur/{see}'>{see}</a></li>" for see in SEEN) + \
            "<li><a href='/alle'>Alle Seen</a></li></ul>"
