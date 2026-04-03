@@ -3,10 +3,14 @@
 from flask import Flask, jsonify
 import requests
 from bs4 import BeautifulSoup
+from flask_cors import CORS
 from flask_caching import Cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 app = Flask(__name__)
+
+# CORS nur für das Frontend erlauben
+CORS(app, origins=["https://seenland-frontend.vercel.app"])
 
 # Cache-Konfiguration (einfacher In-Memory-Cache)
 cache = Cache(app, config={"CACHE_TYPE": "SimpleCache"})
