@@ -2,6 +2,7 @@
 
 from flask import Flask, jsonify
 import requests
+import os
 from bs4 import BeautifulSoup
 from flask_cors import CORS
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -77,6 +78,16 @@ def update_cache():
     print(f"[{datetime.now()}] Cache aktualisiert.")
 
 
+def keep_alive():
+    """Selbst-Ping, um Render Free Tier am Schlafen zu hindern (15 Min Inaktivität)"""
+    url = os.environ.get("RENDER_EXTERNAL_URL", "https://seenland.onrender.com")
+    try:
+        print(f"[{datetime.now()}] Sende Keep-Alive an {url}...")
+        requests.get(url, timeout=5)
+    except requests.exceptions.RequestException as e:
+        print(f"[{datetime.now()}] Keep-Alive fehlgeschlagen: {e}")
+
+
 @app.route("/temperatur/<see_name>")
 def get_temperatur(see_name):
     name = see_name.lower()
@@ -110,6 +121,7 @@ def index():
 # Scheduler initialisieren (wird beim Import ausgeführt, wichtig für Production/Gunicorn)
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=update_cache, trigger="interval", minutes=10)
+scheduler.add_job(func=keep_alive, trigger="interval", minutes=14)
 scheduler.start()
 
 # Initiales Update beim Start
