@@ -4,16 +4,18 @@ from flask import Flask, jsonify
 import requests
 from bs4 import BeautifulSoup
 from flask_cors import CORS
-from flask_caching import Cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime
 
 app = Flask(__name__)
 
 # CORS nur für das Frontend erlauben
 CORS(app, origins=["https://seenland-frontend.vercel.app"])
 
-# Cache-Konfiguration (einfacher In-Memory-Cache)
-cache = Cache(app, config={"CACHE_TYPE": "SimpleCache"})
+# Globaler Cache für Hintergrund-Updates
+data_cache = {}
+last_updated = None
 
 SEEN = {
     "pilsensee": "pilsensee-16628055",
@@ -57,23 +59,9 @@ def scrape_temperature(slug):
     return {"zeit": timestamp, "temperatur": temperature}
 
 
-@app.route("/temperatur/<see_name>")
-@cache.cached(timeout=3600)
-def get_temperatur(see_name):
-    slug = SEEN.get(see_name.lower())
-    if not slug:
-        return jsonify({"fehler": "See nicht gefunden"}), 404
-
-    data = scrape_temperature(slug)
-    if data is None:
-        return jsonify({"fehler": "Daten konnten nicht geladen werden"}), 500
-
-    return jsonify({"see": see_name, **data})
-
-
-@app.route("/alle")
-@cache.cached(timeout=3600)
-def get_alle_temperaturen():
+def update_cache():
+    global data_cache, last_updated
+    print(f"[{datetime.now()}] Aktualisiere Cache...")
     ergebnisse = {}
 
     def fetch(item):
@@ -84,7 +72,32 @@ def get_alle_temperaturen():
         for name, data in executor.map(fetch, SEEN.items()):
             ergebnisse[name] = data if data else {"fehler": "keine Daten"}
 
-    return jsonify(ergebnisse)
+    data_cache = ergebnisse
+    last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{datetime.now()}] Cache aktualisiert.")
+
+
+@app.route("/temperatur/<see_name>")
+def get_temperatur(see_name):
+    name = see_name.lower()
+    if name not in SEEN:
+        return jsonify({"fehler": "See nicht gefunden"}), 404
+
+    data = data_cache.get(name)
+    if not data or "fehler" in data:
+        return jsonify({"fehler": "Daten konnten nicht geladen werden"}), 500
+
+    return jsonify({
+        "see": see_name,
+        **data,
+        "aktualisiert": last_updated
+    })
+
+
+@app.route("/alle")
+def get_alle_temperaturen():
+    # Direktes Mapping zurückgeben, um Frontend-Kompatibilität zu wahren
+    return jsonify(data_cache)
 
 
 @app.route("/")
@@ -93,6 +106,14 @@ def index():
            "".join(f"<li><a href='/temperatur/{see}'>{see}</a></li>" for see in SEEN) + \
            "<li><a href='/alle'>Alle Seen</a></li></ul>"
 
+
+# Scheduler initialisieren (wird beim Import ausgeführt, wichtig für Production/Gunicorn)
+scheduler = BackgroundScheduler()
+scheduler.add_job(func=update_cache, trigger="interval", minutes=10)
+scheduler.start()
+
+# Initiales Update beim Start
+update_cache()
 
 if __name__ == "__main__":
     import os
