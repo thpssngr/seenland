@@ -1,8 +1,11 @@
 # datei: seen_api.py
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import requests
 import os
+import json
+import re
+import threading
 from bs4 import BeautifulSoup
 from flask_cors import CORS
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -25,7 +28,30 @@ SEEN = {
     "starnbergersee": "starnberg-16663002"
 }
 
-BASE_URL = "https://www.gkd.bayern.de/de/seen/wassertemperatur/isar/{slug}/messwerte"
+NAMEN = {
+    "pilsensee": "Pilsensee",
+    "woerthsee": "Wörthsee",
+    "ammersee": "Ammersee",
+    "starnbergersee": "Starnberger See"
+}
+
+# Ohne "?method=tabellen" liefert der GKD inzwischen nur die Grafik ohne Messwert-Tabelle
+BASE_URL = "https://www.gkd.bayern.de/de/seen/wassertemperatur/isar/{slug}/messwerte?method=tabellen"
+ZEIT_MUSTER = re.compile(r"\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}")
+
+# --- Temperatur-Alarme (Push über Expo) ---
+# Struktur: { "<ExpoPushToken>": [ {"see", "richtung", "schwelle", "ausgeloest"}, ... ] }
+# Hinweis: Auf Render Free geht die Datei bei Redeploys verloren. Die App sendet ihre
+# Alarme bei jedem Start erneut, dadurch stellt sich der Bestand selbst wieder her.
+ALARME_DATEI = os.environ.get("ALARME_DATEI", "alarme.json")
+EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
+MAX_ALARME_PRO_GERAET = 20
+# Erst wenn die Temperatur wieder um diesen Wert auf der anderen Seite der Schwelle liegt,
+# kann der Alarm erneut auslösen (verhindert Push-Flut bei Schwankungen um die Schwelle).
+HYSTERESE = 0.5
+
+alarme = {}
+alarme_lock = threading.Lock()
 
 
 def scrape_temperature(slug):
@@ -35,29 +61,28 @@ def scrape_temperature(slug):
     }
     try:
         response = requests.get(url, headers=headers, timeout=10)
-    except requests.exceptions.RequestException:
+    except requests.exceptions.RequestException as e:
+        print(f"[{datetime.now()}] {slug}: Abruf fehlgeschlagen: {e}")
         return None
 
     if response.status_code != 200:
+        print(f"[{datetime.now()}] {slug}: HTTP {response.status_code} von {url}")
         return None
 
     soup = BeautifulSoup(response.text, "html.parser")
-    table = soup.find("table", class_="tblsort")
-    if not table:
-        return None
+    # Erste Zeile mit Zeitstempel + Zahl nehmen (neuester Wert steht oben).
+    # Bevorzugt die bekannte Tabelle "tblsort", sonst jede Tabelle der Seite.
+    tabellen = soup.find_all("table", class_="tblsort") or soup.find_all("table")
+    for table in tabellen:
+        for row in table.find_all("tr"):
+            cells = [td.get_text(strip=True) for td in row.find_all("td")]
+            if len(cells) >= 2 and ZEIT_MUSTER.fullmatch(cells[0]) and parse_temperatur(cells[1]) is not None:
+                timestamp, temperature = cells[0], cells[1].replace(",", ".")
+                return {"zeit": timestamp, "temperatur": temperature}
 
-    rows = table.find_all("tr")
-    if len(rows) < 2:
-        return None
-
-    first_row = rows[1].find_all("td")
-    if len(first_row) < 2:
-        return None
-
-    timestamp = first_row[0].get_text(strip=True)
-    temperature = first_row[1].get_text(strip=True)
-
-    return {"zeit": timestamp, "temperatur": temperature}
+    print(f"[{datetime.now()}] {slug}: keine Messwert-Tabelle gefunden "
+          f"({len(response.text)} Zeichen, Titel: {soup.title.string if soup.title else '-'})")
+    return None
 
 
 def update_cache():
@@ -76,6 +101,115 @@ def update_cache():
     data_cache = ergebnisse
     last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{datetime.now()}] Cache aktualisiert.")
+    pruefe_alarme()
+
+
+def parse_temperatur(wert):
+    try:
+        return float(str(wert).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def aktuelle_temperatur(see):
+    return parse_temperatur((data_cache.get(see) or {}).get("temperatur"))
+
+
+def bedingung_erfuellt(alarm, temp):
+    if alarm["richtung"] == "unter":
+        return temp < alarm["schwelle"]
+    return temp > alarm["schwelle"]
+
+
+def wieder_scharf(alarm, temp):
+    if alarm["richtung"] == "unter":
+        return temp >= alarm["schwelle"] + HYSTERESE
+    return temp <= alarm["schwelle"] - HYSTERESE
+
+
+def lade_alarme():
+    global alarme
+    try:
+        with open(ALARME_DATEI, encoding="utf-8") as f:
+            alarme = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        alarme = {}
+
+
+def speichere_alarme():
+    tmp = ALARME_DATEI + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(alarme, f, ensure_ascii=False)
+    os.replace(tmp, ALARME_DATEI)
+
+
+def format_grad(wert):
+    return f"{wert:g}".replace(".", ",") + " °C"
+
+
+def sende_pushes(nachrichten):
+    """Sendet Nachrichten an den Expo Push Service. Gibt ungültige Tokens zurück."""
+    ungueltig = set()
+    for i in range(0, len(nachrichten), 100):  # Expo erlaubt max. 100 pro Request
+        batch = nachrichten[i:i + 100]
+        try:
+            res = requests.post(EXPO_PUSH_URL, json=batch, timeout=10)
+            tickets = res.json().get("data", [])
+        except (requests.exceptions.RequestException, ValueError) as e:
+            print(f"[{datetime.now()}] Push-Versand fehlgeschlagen: {e}")
+            continue
+        for nachricht, ticket in zip(batch, tickets):
+            if ticket.get("details", {}).get("error") == "DeviceNotRegistered":
+                ungueltig.add(nachricht["to"])
+    return ungueltig
+
+
+def pruefe_alarme():
+    nachrichten = []
+    with alarme_lock:
+        for token, liste in alarme.items():
+            for alarm in liste:
+                temp = aktuelle_temperatur(alarm["see"])
+                if temp is None:
+                    continue
+                if not alarm["ausgeloest"] and bedingung_erfuellt(alarm, temp):
+                    alarm["ausgeloest"] = True
+                    verb = "unter" if alarm["richtung"] == "unter" else "über"
+                    nachrichten.append({
+                        "to": token,
+                        "title": f"{NAMEN[alarm['see']]}: {format_grad(temp)}",
+                        "body": f"Die Wassertemperatur liegt jetzt {verb} {format_grad(alarm['schwelle'])}.",
+                        "sound": "default",
+                        "data": {"see": alarm["see"]},
+                    })
+                elif alarm["ausgeloest"] and wieder_scharf(alarm, temp):
+                    alarm["ausgeloest"] = False
+        speichere_alarme()
+
+    if not nachrichten:
+        return
+    print(f"[{datetime.now()}] Sende {len(nachrichten)} Push-Nachricht(en)...")
+    ungueltig = sende_pushes(nachrichten)
+    if ungueltig:
+        with alarme_lock:
+            for token in ungueltig:
+                alarme.pop(token, None)
+            speichere_alarme()
+
+
+def validiere_alarm(a):
+    if not isinstance(a, dict):
+        return None
+    see = a.get("see")
+    richtung = a.get("richtung")
+    schwelle = a.get("schwelle")
+    if see not in SEEN or richtung not in ("unter", "ueber"):
+        return None
+    if isinstance(schwelle, bool) or not isinstance(schwelle, (int, float)):
+        return None
+    if not -5 <= schwelle <= 40:
+        return None
+    return {"see": see, "richtung": richtung, "schwelle": round(float(schwelle), 1)}
 
 
 def keep_alive():
@@ -111,6 +245,65 @@ def get_alle_temperaturen():
     return jsonify(data_cache)
 
 
+@app.route("/alarme", methods=["PUT"])
+def set_alarme():
+    """Ersetzt alle Alarme eines Geräts. Leere Liste = Gerät abmelden."""
+    body = request.get_json(silent=True) or {}
+    token = body.get("token")
+    liste = body.get("alarme")
+    if not isinstance(token, str) or not token.startswith(("ExponentPushToken[", "ExpoPushToken[")):
+        return jsonify({"fehler": "Ungültiger Push-Token"}), 400
+    if not isinstance(liste, list) or len(liste) > MAX_ALARME_PRO_GERAET:
+        return jsonify({"fehler": "Ungültige Alarmliste"}), 400
+
+    neu = []
+    for a in liste:
+        alarm = validiere_alarm(a)
+        if alarm is None:
+            return jsonify({"fehler": "Ungültiger Alarm", "alarm": a}), 400
+        neu.append(alarm)
+
+    with alarme_lock:
+        bisher = {(a["see"], a["richtung"], a["schwelle"]): a["ausgeloest"]
+                  for a in alarme.get(token, [])}
+        for alarm in neu:
+            key = (alarm["see"], alarm["richtung"], alarm["schwelle"])
+            if key in bisher:
+                alarm["ausgeloest"] = bisher[key]
+            else:
+                # Ist die Bedingung schon erfüllt, erst nach erneutem Überschreiten melden
+                temp = aktuelle_temperatur(alarm["see"])
+                alarm["ausgeloest"] = temp is not None and bedingung_erfuellt(alarm, temp)
+        if neu:
+            alarme[token] = neu
+        else:
+            alarme.pop(token, None)
+        speichere_alarme()
+
+    return jsonify({"alarme": neu})
+
+
+@app.route("/alarme/test", methods=["POST"])
+def test_push():
+    """Schickt sofort eine Test-Benachrichtigung an das Gerät (prüft die ganze Push-Kette)."""
+    token = (request.get_json(silent=True) or {}).get("token")
+    if not isinstance(token, str) or not token.startswith(("ExponentPushToken[", "ExpoPushToken[")):
+        return jsonify({"fehler": "Ungültiger Push-Token"}), 400
+    try:
+        res = requests.post(EXPO_PUSH_URL, json=[{
+            "to": token,
+            "title": "Seenland",
+            "body": "Test-Benachrichtigung: Push funktioniert.",
+            "sound": "default",
+        }], timeout=10)
+        ticket = (res.json().get("data") or [{}])[0]
+    except (requests.exceptions.RequestException, ValueError) as e:
+        return jsonify({"fehler": f"Expo Push Service nicht erreichbar: {e}"}), 502
+    if ticket.get("status") != "ok":
+        return jsonify({"fehler": ticket.get("message", "Push wurde abgelehnt")}), 502
+    return jsonify({"ok": True})
+
+
 @app.route("/")
 def index():
     return "<h1>🚤 Seen-Temperatur API</h1><ul>" + \
@@ -124,7 +317,8 @@ scheduler.add_job(func=update_cache, trigger="interval", minutes=10)
 scheduler.add_job(func=keep_alive, trigger="interval", minutes=14)
 scheduler.start()
 
-# Initiales Update beim Start
+# Gespeicherte Alarme laden, dann initiales Update beim Start
+lade_alarme()
 update_cache()
 
 if __name__ == "__main__":
