@@ -58,15 +58,19 @@ def scrape_temperature(slug):
     }
     try:
         response = requests.get(url, headers=headers, timeout=10)
-    except requests.exceptions.RequestException:
+    except requests.exceptions.RequestException as e:
+        print(f"[{datetime.now()}] {slug}: Abruf fehlgeschlagen: {e}")
         return None
 
     if response.status_code != 200:
+        print(f"[{datetime.now()}] {slug}: HTTP {response.status_code} von {url}")
         return None
 
     soup = BeautifulSoup(response.text, "html.parser")
     table = soup.find("table", class_="tblsort")
     if not table:
+        print(f"[{datetime.now()}] {slug}: Tabelle 'tblsort' nicht gefunden "
+              f"({len(response.text)} Zeichen, Titel: {soup.title.string if soup.title else '-'})")
         return None
 
     rows = table.find_all("tr")

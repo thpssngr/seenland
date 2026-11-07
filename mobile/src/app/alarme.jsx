@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useLocalSearchParams } from "expo-router";
 import { formatGrad, parseTemp } from "../lib/format";
 import { lakeName, lakes } from "../lib/lakes";
 import { useTemperaturen } from "../lib/temperaturen";
@@ -23,7 +24,11 @@ const istErfuellt = (a, temp) =>
 export default function Alarme() {
   const { data } = useTemperaturen();
   const [alarme, setAlarme] = useState([]);
-  const [see, setSee] = useState(lakes[0].id);
+  const params = useLocalSearchParams();
+  // Aus der See-Detailansicht kommend ist der See schon vorausgewählt
+  const [see, setSee] = useState(
+    lakes.some((l) => l.id === params.see) ? params.see : lakes[0].id
+  );
   const [richtung, setRichtung] = useState("unter");
   const [schwelle, setSchwelle] = useState(10);
   const [laeuft, setLaeuft] = useState(false);

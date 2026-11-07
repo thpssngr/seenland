@@ -35,6 +35,7 @@ export default function RootLayout() {
       >
         <Stack.Screen name="index" options={{ headerShown: false, title: "Seen" }} />
         <Stack.Screen name="alarme" options={{ title: "Temperatur-Alarme" }} />
+        <Stack.Screen name="see/[id]" options={{ title: "" }} />
         <Stack.Screen name="impressum" options={{ title: "Impressum & Datenschutz" }} />
       </Stack>
     </ThemeProvider>

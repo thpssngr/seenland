@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
-  Image,
   ImageBackground,
   Linking,
   Platform,
@@ -133,10 +132,7 @@ export default function Seenland() {
               <View
                 style={[styles.page, { paddingTop: insets.top + 80, paddingBottom: insets.bottom + 110 }]}
               >
-                {/* Umriss oben, Temperatur & Seename unten – ohne Überlappung */}
-                <View style={styles.outlineBox}>
-                  <Image source={item.outline} style={styles.outline} resizeMode="contain" />
-                </View>
+                <View style={{ flex: 1 }} />
                 <Text style={styles.temp} adjustsFontSizeToFit numberOfLines={1}>
                   {temperaturText(item.id)}
                 </Text>
@@ -154,6 +150,15 @@ export default function Seenland() {
                     }
                   >
                     <Text style={[styles.star, fav && styles.starActive]}>{fav ? "★" : "☆"}</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => router.push(`/see/${item.id}`)}
+                    hitSlop={10}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Infos zu ${item.name}`}
+                    style={styles.infoBtn}
+                  >
+                    <Text style={styles.infoText}>i</Text>
                   </Pressable>
                 </View>
                 <Text style={styles.zeitraum}>
@@ -231,8 +236,6 @@ const shadow = {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#000" },
   page: { flex: 1, alignItems: "center" },
-  outlineBox: { flex: 1, width: "100%", alignItems: "center", justifyContent: "center", paddingBottom: 16 },
-  outline: { width: "70%", height: "100%", opacity: 0.5 },
   temp: { fontSize: 88, fontWeight: "700", color: "#fff", paddingHorizontal: 16, ...shadow },
   header: { position: "absolute", top: 0, left: 0, right: 0, alignItems: "center" },
   title: { fontSize: 30, fontWeight: "700", letterSpacing: 6, color: "#fff", ...shadow },
@@ -242,6 +245,16 @@ const styles = StyleSheet.create({
   name: { flexShrink: 1, fontSize: 28, fontWeight: "600", letterSpacing: 4, color: "rgba(255,255,255,0.9)", ...shadow },
   star: { fontSize: 30, color: "rgba(255,255,255,0.6)", ...shadow },
   starActive: { color: "#fde047" },
+  infoBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.6)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  infoText: { color: "rgba(255,255,255,0.8)", fontSize: 16, fontWeight: "700", fontStyle: "italic" },
   zeitraum: { fontSize: 14, color: "rgba(255,255,255,0.6)", marginTop: 4 },
   hint: {
     marginTop: 12,
