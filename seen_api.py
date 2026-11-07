@@ -37,7 +37,9 @@ NAMEN = {
 
 # Ohne "?method=tabellen" liefert der GKD inzwischen nur die Grafik ohne Messwert-Tabelle
 BASE_URL = "https://www.gkd.bayern.de/de/seen/wassertemperatur/isar/{slug}/messwerte?method=tabellen"
-ZEIT_MUSTER = re.compile(r"\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}")
+DATUM_MUSTER = re.compile(r"(\d{2}\.\d{2}\.\d{4})(?:\s+(\d{2}:\d{2}))?")
+UHRZEIT_MUSTER = re.compile(r"\d{2}:\d{2}")
+ZAHL_MUSTER = re.compile(r"-?\d+(?:[.,]\d+)?")
 
 # --- Temperatur-Alarme (Push über Expo) ---
 # Struktur: { "<ExpoPushToken>": [ {"see", "richtung", "schwelle", "ausgeloest"}, ... ] }
@@ -70,18 +72,53 @@ def scrape_temperature(slug):
         return None
 
     soup = BeautifulSoup(response.text, "html.parser")
-    # Erste Zeile mit Zeitstempel + Zahl nehmen (neuester Wert steht oben).
-    # Bevorzugt die bekannte Tabelle "tblsort", sonst jede Tabelle der Seite.
-    tabellen = soup.find_all("table", class_="tblsort") or soup.find_all("table")
-    for table in tabellen:
-        for row in table.find_all("tr"):
-            cells = [td.get_text(strip=True) for td in row.find_all("td")]
-            if len(cells) >= 2 and ZEIT_MUSTER.fullmatch(cells[0]) and parse_temperatur(cells[1]) is not None:
-                timestamp, temperature = cells[0], cells[1].replace(",", ".")
-                return {"zeit": timestamp, "temperatur": temperature}
+    # Alle Tabellenzeilen durchsuchen: Datum (+ Uhrzeit, ggf. in eigener Zelle) und
+    # danach der erste Zahlenwert. Der neueste Zeitpunkt gewinnt.
+    neuester = None
+    for row in soup.find_all("tr"):
+        cells = [c.get_text(" ", strip=True) for c in row.find_all(["td", "th"])]
+        messung = parse_zeile(cells)
+        if messung and (neuester is None or messung[0] > neuester[0]):
+            neuester = messung
+    if neuester:
+        zeitpunkt, temp = neuester
+        return {"zeit": zeitpunkt.strftime("%d.%m.%Y %H:%M"), "temperatur": f"{temp:g}"}
 
-    print(f"[{datetime.now()}] {slug}: keine Messwert-Tabelle gefunden "
-          f"({len(response.text)} Zeichen, Titel: {soup.title.string if soup.title else '-'})")
+    # Diagnose fürs Render-Log: wie tauchen Datumswerte im HTML auf?
+    html = response.text
+    treffer = DATUM_MUSTER.search(html)
+    ausschnitt = html[max(0, treffer.start() - 300):treffer.start() + 400] if treffer else "-"
+    print(f"[{datetime.now()}] {slug}: keine Messwerte gefunden "
+          f"({len(html)} Zeichen, {len(soup.find_all('table'))} Tabellen, "
+          f"{len(soup.find_all('tr'))} Zeilen). Ausschnitt: {' '.join(ausschnitt.split())}")
+    return None
+
+
+def zahl(text):
+    text = text.replace("°C", "").replace("°", "").strip()
+    if not ZAHL_MUSTER.fullmatch(text):
+        return None
+    return float(text.replace(",", "."))
+
+
+def parse_zeile(cells):
+    """Liefert (datetime, temperatur) für eine Tabellenzeile oder None."""
+    for i, cell in enumerate(cells):
+        m = DATUM_MUSTER.match(cell)
+        if not m:
+            continue
+        datum, uhrzeit, rest = m.group(1), m.group(2), cells[i + 1:]
+        if not uhrzeit and rest and UHRZEIT_MUSTER.fullmatch(rest[0]):
+            uhrzeit, rest = rest[0], rest[1:]
+        if not uhrzeit:
+            return None
+        for c in rest:
+            temp = zahl(c)
+            if temp is not None:
+                if not -5 <= temp <= 40:
+                    return None
+                return datetime.strptime(f"{datum} {uhrzeit}", "%d.%m.%Y %H:%M"), temp
+        return None
     return None
 
 
