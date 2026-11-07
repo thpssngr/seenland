@@ -4,6 +4,7 @@ from flask import Flask, jsonify, request
 import requests
 import os
 import json
+import re
 import threading
 from bs4 import BeautifulSoup
 from flask_cors import CORS
@@ -34,7 +35,9 @@ NAMEN = {
     "starnbergersee": "Starnberger See"
 }
 
-BASE_URL = "https://www.gkd.bayern.de/de/seen/wassertemperatur/isar/{slug}/messwerte"
+# Ohne "?method=tabellen" liefert der GKD inzwischen nur die Grafik ohne Messwert-Tabelle
+BASE_URL = "https://www.gkd.bayern.de/de/seen/wassertemperatur/isar/{slug}/messwerte?method=tabellen"
+ZEIT_MUSTER = re.compile(r"\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}")
 
 # --- Temperatur-Alarme (Push über Expo) ---
 # Struktur: { "<ExpoPushToken>": [ {"see", "richtung", "schwelle", "ausgeloest"}, ... ] }
@@ -67,24 +70,19 @@ def scrape_temperature(slug):
         return None
 
     soup = BeautifulSoup(response.text, "html.parser")
-    table = soup.find("table", class_="tblsort")
-    if not table:
-        print(f"[{datetime.now()}] {slug}: Tabelle 'tblsort' nicht gefunden "
-              f"({len(response.text)} Zeichen, Titel: {soup.title.string if soup.title else '-'})")
-        return None
+    # Erste Zeile mit Zeitstempel + Zahl nehmen (neuester Wert steht oben).
+    # Bevorzugt die bekannte Tabelle "tblsort", sonst jede Tabelle der Seite.
+    tabellen = soup.find_all("table", class_="tblsort") or soup.find_all("table")
+    for table in tabellen:
+        for row in table.find_all("tr"):
+            cells = [td.get_text(strip=True) for td in row.find_all("td")]
+            if len(cells) >= 2 and ZEIT_MUSTER.fullmatch(cells[0]) and parse_temperatur(cells[1]) is not None:
+                timestamp, temperature = cells[0], cells[1].replace(",", ".")
+                return {"zeit": timestamp, "temperatur": temperature}
 
-    rows = table.find_all("tr")
-    if len(rows) < 2:
-        return None
-
-    first_row = rows[1].find_all("td")
-    if len(first_row) < 2:
-        return None
-
-    timestamp = first_row[0].get_text(strip=True)
-    temperature = first_row[1].get_text(strip=True)
-
-    return {"zeit": timestamp, "temperatur": temperature}
+    print(f"[{datetime.now()}] {slug}: keine Messwert-Tabelle gefunden "
+          f"({len(response.text)} Zeichen, Titel: {soup.title.string if soup.title else '-'})")
+    return None
 
 
 def update_cache():
