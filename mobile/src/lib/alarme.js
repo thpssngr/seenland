@@ -69,3 +69,17 @@ export async function syncAlarme(alarme, { fragen = false } = {}) {
     throw new Error("Der Server hat die Alarme nicht angenommen.");
   }
 }
+
+// Löst über das Backend sofort eine Push-Benachrichtigung an dieses Gerät aus.
+export async function sendeTestPush() {
+  const token = await pushToken({ fragen: true });
+  const res = await fetch(`${API_URL}/alarme/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.fehler ?? `Server-Fehler (${res.status}).`);
+  }
+}

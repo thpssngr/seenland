@@ -157,7 +157,7 @@ export default function Seenland() {
                   </Pressable>
                 </View>
                 <Text style={styles.zeitraum}>
-                  {timestamp ? `Messzeitraum: ${timestamp}` : " "}
+                  {fehler ?? (timestamp ? `Messzeitraum: ${timestamp}` : " ")}
                 </Text>
                 {showHint && (
                   <Pressable onPress={dismissHint} style={styles.hint}>

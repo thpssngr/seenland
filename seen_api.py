@@ -281,6 +281,27 @@ def set_alarme():
     return jsonify({"alarme": neu})
 
 
+@app.route("/alarme/test", methods=["POST"])
+def test_push():
+    """Schickt sofort eine Test-Benachrichtigung an das Gerät (prüft die ganze Push-Kette)."""
+    token = (request.get_json(silent=True) or {}).get("token")
+    if not isinstance(token, str) or not token.startswith(("ExponentPushToken[", "ExpoPushToken[")):
+        return jsonify({"fehler": "Ungültiger Push-Token"}), 400
+    try:
+        res = requests.post(EXPO_PUSH_URL, json=[{
+            "to": token,
+            "title": "Seenland",
+            "body": "Test-Benachrichtigung: Push funktioniert.",
+            "sound": "default",
+        }], timeout=10)
+        ticket = (res.json().get("data") or [{}])[0]
+    except (requests.exceptions.RequestException, ValueError) as e:
+        return jsonify({"fehler": f"Expo Push Service nicht erreichbar: {e}"}), 502
+    if ticket.get("status") != "ok":
+        return jsonify({"fehler": ticket.get("message", "Push wurde abgelehnt")}), 502
+    return jsonify({"ok": True})
+
+
 @app.route("/")
 def index():
     return "<h1>🚤 Seen-Temperatur API</h1><ul>" + \

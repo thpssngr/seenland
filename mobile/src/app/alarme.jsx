@@ -7,6 +7,7 @@ import {
   gleicherAlarm,
   ladeAlarme,
   MAX_ALARME,
+  sendeTestPush,
   speichereAlarme,
   syncAlarme,
 } from "../lib/alarme";
@@ -41,7 +42,7 @@ export default function Alarme() {
       await speichereAlarme(neu);
       setAlarme(neu);
     } catch (e) {
-      setMeldung(e.message || "Server nicht erreichbar. Bitte später erneut versuchen.");
+      setMeldung({ text: e.message || "Server nicht erreichbar. Bitte später erneut versuchen." });
     } finally {
       setLaeuft(false);
     }
@@ -50,10 +51,23 @@ export default function Alarme() {
   const hinzufuegen = () => {
     const alarm = { see, richtung, schwelle };
     if (alarme.some((a) => gleicherAlarm(a, alarm))) {
-      setMeldung("Diesen Alarm gibt es schon.");
+      setMeldung({ text: "Diesen Alarm gibt es schon." });
       return;
     }
     uebernehmen([...alarme, alarm]);
+  };
+
+  const testen = async () => {
+    setLaeuft(true);
+    setMeldung(null);
+    try {
+      await sendeTestPush();
+      setMeldung({ ok: true, text: "Test gesendet – die Benachrichtigung sollte gleich erscheinen." });
+    } catch (e) {
+      setMeldung({ text: e.message || "Server nicht erreichbar." });
+    } finally {
+      setLaeuft(false);
+    }
   };
 
   const entfernen = (alarm) => uebernehmen(alarme.filter((a) => !gleicherAlarm(a, alarm)));
@@ -162,7 +176,13 @@ export default function Alarme() {
         )}
       </Pressable>
 
-      {meldung && <Text style={styles.error}>{meldung}</Text>}
+      <Pressable onPress={testen} disabled={laeuft} style={[styles.secondary, laeuft && { opacity: 0.5 }]}>
+        <Text style={styles.secondaryText}>Test-Benachrichtigung senden</Text>
+      </Pressable>
+
+      {meldung && (
+        <Text style={[styles.error, meldung.ok && styles.success]}>{meldung.text}</Text>
+      )}
     </ScrollView>
   );
 }
@@ -212,5 +232,14 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   buttonText: { color: "#000", fontSize: 16, fontWeight: "600" },
+  secondary: {
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.3)",
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  secondaryText: { color: "#fff", fontSize: 15 },
   error: { color: "#fca5a5", fontSize: 14, textAlign: "center" },
+  success: { color: "#86efac" },
 });
