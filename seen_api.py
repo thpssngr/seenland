@@ -92,16 +92,14 @@ def scrape_url(slug, url):
         zeitpunkt, temp = neuester
         return {"zeit": zeitpunkt.strftime("%d.%m.%Y %H:%M"), "temperatur": f"{temp:g}"}
 
-    # Diagnose fürs Render-Log: kurze Antworten (Sperrseite o. Ä.) komplett, sonst Ausschnitt
-    html = response.text
-    if len(html) < 2000:
-        ausschnitt = html
-    else:
-        treffer = DATUM_MUSTER.search(html)
-        ausschnitt = html[max(0, treffer.start() - 300):treffer.start() + 400] if treffer else "-"
+    # Diagnose fürs Render-Log: Titel und sichtbarer Text (z. B. Sperr- oder Captcha-Seite)
+    titel = soup.title.get_text(strip=True) if soup.title else "-"
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    text = " ".join(soup.get_text(" ").split())
     print(f"[{datetime.now()}] {slug}: keine Messwerte in {url} "
-          f"({len(html)} Zeichen, {len(soup.find_all('table'))} Tabellen). "
-          f"Inhalt: {' '.join(ausschnitt.split())}")
+          f"(HTTP {response.status_code}, {len(response.text)} Zeichen). "
+          f"Titel: {titel} | Text: {text[:600]}")
     return None
 
 
