@@ -36,12 +36,15 @@ NAMEN = {
 }
 
 # Ohne "?method=tabellen" liefert der GKD inzwischen nur die Grafik ohne Messwert-Tabelle
-# Quellen in Reihenfolge: GKD-Tabelle, sonst Hochwassernachrichtendienst (gleiche Messstellen)
-QUELLEN = [
-    "https://www.gkd.bayern.de/de/seen/wassertemperatur/isar/{slug}/messwerte?method=tabellen",
-    "https://www.nid.bayern.de/wassertemperatur/isar/{slug}/tabelleZweiMonate",
-]
-DATEN_URL_MUSTER = re.compile(r"""["']([^"'\s<>]{0,150}(?:json|ajax|api|csv|daten|werte|data)[^"'\s<>]{0,80})["']""", re.I)
+# Ohne "?method=tabellen" liefert der GKD nur die Grafik ohne Messwert-Tabelle
+BASE_URL = "https://www.gkd.bayern.de/de/seen/wassertemperatur/isar/{slug}/messwerte?method=tabellen"
+# Vollständige Browser-Kopfzeilen: unvollständige User-Agents werden gern geblockt
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
+}
 DATUM_MUSTER = re.compile(r"(\d{2}\.\d{2}\.\d{4})(?:\s+(\d{2}:\d{2}))?")
 UHRZEIT_MUSTER = re.compile(r"\d{2}:\d{2}")
 ZAHL_MUSTER = re.compile(r"-?\d+(?:[.,]\d+)?")
@@ -62,19 +65,12 @@ alarme_lock = threading.Lock()
 
 
 def scrape_temperature(slug):
-    for vorlage in QUELLEN:
-        messung = scrape_url(slug, vorlage.format(slug=slug))
-        if messung:
-            return messung
-    return None
+    return scrape_url(slug, BASE_URL.format(slug=slug))
 
 
 def scrape_url(slug, url):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X)"
-    }
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=HEADERS, timeout=10)
     except requests.exceptions.RequestException as e:
         print(f"[{datetime.now()}] {slug}: Abruf fehlgeschlagen ({url}): {e}")
         return None
@@ -96,15 +92,16 @@ def scrape_url(slug, url):
         zeitpunkt, temp = neuester
         return {"zeit": zeitpunkt.strftime("%d.%m.%Y %H:%M"), "temperatur": f"{temp:g}"}
 
-    # Diagnose fürs Render-Log: Datumswerte im HTML und mögliche Daten-Adressen (AJAX)
+    # Diagnose fürs Render-Log: kurze Antworten (Sperrseite o. Ä.) komplett, sonst Ausschnitt
     html = response.text
-    treffer = DATUM_MUSTER.search(html)
-    ausschnitt = html[max(0, treffer.start() - 300):treffer.start() + 400] if treffer else "-"
-    kandidaten = list(dict.fromkeys(DATEN_URL_MUSTER.findall(html)))[:20]
+    if len(html) < 2000:
+        ausschnitt = html
+    else:
+        treffer = DATUM_MUSTER.search(html)
+        ausschnitt = html[max(0, treffer.start() - 300):treffer.start() + 400] if treffer else "-"
     print(f"[{datetime.now()}] {slug}: keine Messwerte in {url} "
-          f"({len(html)} Zeichen, {len(soup.find_all('table'))} Tabellen, "
-          f"{len(soup.find_all('tr'))} Zeilen). Ausschnitt: {' '.join(ausschnitt.split())}")
-    print(f"[{datetime.now()}] {slug}: mögliche Daten-Adressen: {kandidaten}")
+          f"({len(html)} Zeichen, {len(soup.find_all('table'))} Tabellen). "
+          f"Inhalt: {' '.join(ausschnitt.split())}")
     return None
 
 
@@ -147,7 +144,13 @@ def update_cache():
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         for name, data in executor.map(fetch, SEEN.items()):
-            ergebnisse[name] = data if data else {"fehler": "keine Daten"}
+            if data:
+                ergebnisse[name] = data
+            elif "temperatur" in data_cache.get(name, {}):
+                # Abruf gescheitert: letzten bekannten Wert behalten statt "keine Daten"
+                ergebnisse[name] = data_cache[name]
+            else:
+                ergebnisse[name] = {"fehler": "keine Daten"}
 
     data_cache = ergebnisse
     last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
