@@ -32,6 +32,12 @@
       ]
     ],
     "scheme": "seenland",
-    "backgroundColor": "#000000"
+    "backgroundColor": "#000000",
+    "owner": "thpssngr",
+    "extra": {
+      "eas": {
+        "projectId": "562b9fba-1fc6-4dbb-81a9-f4344416f89d"
+      }
+    }
   }
 }
