@@ -36,7 +36,12 @@ NAMEN = {
 }
 
 # Ohne "?method=tabellen" liefert der GKD inzwischen nur die Grafik ohne Messwert-Tabelle
-BASE_URL = "https://www.gkd.bayern.de/de/seen/wassertemperatur/isar/{slug}/messwerte?method=tabellen"
+# Quellen in Reihenfolge: GKD-Tabelle, sonst Hochwassernachrichtendienst (gleiche Messstellen)
+QUELLEN = [
+    "https://www.gkd.bayern.de/de/seen/wassertemperatur/isar/{slug}/messwerte?method=tabellen",
+    "https://www.nid.bayern.de/wassertemperatur/isar/{slug}/tabelleZweiMonate",
+]
+DATEN_URL_MUSTER = re.compile(r"""["']([^"'\s<>]{0,150}(?:json|ajax|api|csv|daten|werte|data)[^"'\s<>]{0,80})["']""", re.I)
 DATUM_MUSTER = re.compile(r"(\d{2}\.\d{2}\.\d{4})(?:\s+(\d{2}:\d{2}))?")
 UHRZEIT_MUSTER = re.compile(r"\d{2}:\d{2}")
 ZAHL_MUSTER = re.compile(r"-?\d+(?:[.,]\d+)?")
@@ -57,14 +62,21 @@ alarme_lock = threading.Lock()
 
 
 def scrape_temperature(slug):
-    url = BASE_URL.format(slug=slug)
+    for vorlage in QUELLEN:
+        messung = scrape_url(slug, vorlage.format(slug=slug))
+        if messung:
+            return messung
+    return None
+
+
+def scrape_url(slug, url):
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X)"
     }
     try:
         response = requests.get(url, headers=headers, timeout=10)
     except requests.exceptions.RequestException as e:
-        print(f"[{datetime.now()}] {slug}: Abruf fehlgeschlagen: {e}")
+        print(f"[{datetime.now()}] {slug}: Abruf fehlgeschlagen ({url}): {e}")
         return None
 
     if response.status_code != 200:
@@ -84,13 +96,15 @@ def scrape_temperature(slug):
         zeitpunkt, temp = neuester
         return {"zeit": zeitpunkt.strftime("%d.%m.%Y %H:%M"), "temperatur": f"{temp:g}"}
 
-    # Diagnose fürs Render-Log: wie tauchen Datumswerte im HTML auf?
+    # Diagnose fürs Render-Log: Datumswerte im HTML und mögliche Daten-Adressen (AJAX)
     html = response.text
     treffer = DATUM_MUSTER.search(html)
     ausschnitt = html[max(0, treffer.start() - 300):treffer.start() + 400] if treffer else "-"
-    print(f"[{datetime.now()}] {slug}: keine Messwerte gefunden "
+    kandidaten = list(dict.fromkeys(DATEN_URL_MUSTER.findall(html)))[:20]
+    print(f"[{datetime.now()}] {slug}: keine Messwerte in {url} "
           f"({len(html)} Zeichen, {len(soup.find_all('table'))} Tabellen, "
           f"{len(soup.find_all('tr'))} Zeilen). Ausschnitt: {' '.join(ausschnitt.split())}")
+    print(f"[{datetime.now()}] {slug}: mögliche Daten-Adressen: {kandidaten}")
     return None
 
 
@@ -131,7 +145,7 @@ def update_cache():
         name, slug = item
         return name, scrape_temperature(slug)
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=2) as executor:
         for name, data in executor.map(fetch, SEEN.items()):
             ergebnisse[name] = data if data else {"fehler": "keine Daten"}
 
