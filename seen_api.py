@@ -365,7 +365,8 @@ def index():
 
 # Scheduler initialisieren (wird beim Import ausgeführt, wichtig für Production/Gunicorn)
 scheduler = BackgroundScheduler()
-scheduler.add_job(func=update_cache, trigger="interval", minutes=10)
+# GKD misst stündlich; seltener abfragen schont den Server (zu viele Abrufe lösen eine Bot-Prüfung aus)
+scheduler.add_job(func=update_cache, trigger="interval", minutes=30)
 scheduler.add_job(func=keep_alive, trigger="interval", minutes=14)
 scheduler.start()
 

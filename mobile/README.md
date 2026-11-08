@@ -17,7 +17,7 @@ Expo-/React-Native-App (iOS & Android) zur Webseite
 
 1. Die App holt sich einen Expo-Push-Token und schickt ihn mit allen Alarmen per `PUT /alarme`
    ans Backend.
-2. Das Backend prüft nach jedem Scrape (alle 10 Min.) die Schwellen und verschickt über den
+2. Das Backend prüft nach jedem Scrape (alle 30 Min.) die Schwellen und verschickt über den
    Expo Push Service eine Benachrichtigung, **sobald** die Schwelle unter- bzw. überschritten wird.
    Danach ist der Alarm stumm, bis die Temperatur wieder 0,5 °C auf der anderen Seite liegt
    (verhindert Push-Flut bei Schwankungen).
