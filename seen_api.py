@@ -38,6 +38,8 @@ NAMEN = {
 # Ohne "?method=tabellen" liefert der GKD inzwischen nur die Grafik ohne Messwert-Tabelle
 # Ohne "?method=tabellen" liefert der GKD nur die Grafik ohne Messwert-Tabelle
 BASE_URL = "https://www.gkd.bayern.de/de/seen/wassertemperatur/isar/{slug}/messwerte?method=tabellen"
+# Übersicht mit dem aktuellen Wert aller See-Messstellen: ein Abruf statt vier
+UEBERSICHT_URL = "https://www.gkd.bayern.de/de/seen/wassertemperatur/tabellen"
 # Vollständige Browser-Kopfzeilen: unvollständige User-Agents werden gern geblockt
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -92,15 +94,54 @@ def scrape_url(slug, url):
         zeitpunkt, temp = neuester
         return {"zeit": zeitpunkt.strftime("%d.%m.%Y %H:%M"), "temperatur": f"{temp:g}"}
 
-    # Diagnose fürs Render-Log: Titel und sichtbarer Text (z. B. Sperr- oder Captcha-Seite)
+    logge_fehlschlag(slug, url, response, soup)
+    return None
+
+
+def logge_fehlschlag(name, url, response, soup):
+    """Titel und sichtbarer Text fürs Render-Log (z. B. Sperr- oder Prüfseite)."""
     titel = soup.title.get_text(strip=True) if soup.title else "-"
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
     text = " ".join(soup.get_text(" ").split())
-    print(f"[{datetime.now()}] {slug}: keine Messwerte in {url} "
+    print(f"[{datetime.now()}] {name}: keine Messwerte in {url} "
           f"(HTTP {response.status_code}, {len(response.text)} Zeichen). "
           f"Titel: {titel} | Text: {text[:600]}")
-    return None
+
+
+def scrape_uebersicht():
+    """Liest die GKD-Übersichtstabelle. Ergebnis: {slug: {"zeit", "temperatur"}}.
+
+    Zuordnung über die Messstellen-Nummer im Link der Zeile (nicht über den Seenamen,
+    am Ammersee gibt es z. B. auch die "Ammerseeboje" mit veralteten Werten)."""
+    try:
+        response = requests.get(UEBERSICHT_URL, headers=HEADERS, timeout=10)
+    except requests.exceptions.RequestException as e:
+        print(f"[{datetime.now()}] Übersicht: Abruf fehlgeschlagen: {e}")
+        return {}
+    if response.status_code != 200:
+        print(f"[{datetime.now()}] Übersicht: HTTP {response.status_code}")
+        return {}
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    nummern = {slug.rsplit("-", 1)[1]: slug for slug in SEEN.values()}
+    ergebnis = {}
+    for row in soup.find_all("tr"):
+        links = " ".join(a.get("href", "") for a in row.find_all("a"))
+        slug = next((s for nr, s in nummern.items() if nr in links), None)
+        if not slug:
+            continue
+        cells = [c.get_text(" ", strip=True) for c in row.find_all(["td", "th"])]
+        messung = parse_zeile(cells)
+        if messung:
+            zeitpunkt, temp = messung
+            ergebnis[slug] = {"zeit": zeitpunkt.strftime("%d.%m.%Y %H:%M"), "temperatur": f"{temp:g}"}
+
+    if not ergebnis:
+        logge_fehlschlag("Übersicht", UEBERSICHT_URL, response, soup)
+    else:
+        print(f"[{datetime.now()}] Übersicht: {len(ergebnis)} von {len(SEEN)} Seen gelesen.")
+    return ergebnis
 
 
 def zahl(text):
@@ -135,10 +176,12 @@ def update_cache():
     global data_cache, last_updated
     print(f"[{datetime.now()}] Aktualisiere Cache...")
     ergebnisse = {}
+    uebersicht = scrape_uebersicht()
 
     def fetch(item):
         name, slug = item
-        return name, scrape_temperature(slug)
+        # Einzelseite nur, wenn der See in der Übersicht fehlt
+        return name, uebersicht.get(slug) or scrape_temperature(slug)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         for name, data in executor.map(fetch, SEEN.items()):
